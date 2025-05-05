@@ -1,0 +1,439 @@
+/*
+    Remote Server Integration
+    --------------------------
+    Enables remote servers to report data to the centralized SSMON database.
+    Uses linked servers and SQL Server Agent jobs for automated data collection.
+*/
+
+-- Step 1: Declare a variable for the SSMON server name
+DECLARE @SSMONServerName NVARCHAR(255) = 'NTS1209'; -- Replace with the actual server name
+DECLARE @ConnectionString NVARCHAR(200);
+
+SET @ConnectionString = 'Driver={SQL Server};Server=' + @SSMONServerName + ';Database=SSMON;Trusted_Connection=yes;';
+
+
+
+
+-- Step 2: Create Linked Server to SSMON Database
+IF NOT EXISTS (SELECT * FROM master.sys.servers WHERE name = 'SSMON')
+BEGIN
+    EXEC master.dbo.sp_addlinkedserver 
+        @server = 'SSMON',
+        @srvproduct = '',
+        @provider = 'SQLNCLI',
+		@provstr = @ConnectionString
+
+    EXEC master.dbo.sp_addlinkedsrvlogin 
+        @rmtsrvname = 'SSMON',
+        @useself = 'TRUE';
+END;
+
+
+
+GO
+
+
+-- Step 3: Create SQL Server Agent Jobs for Each Table
+
+-- Job to Report Instances
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Instances Reporting';
+
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Instances Reporting',
+    @step_name = 'Report Instances',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Instances (InstanceName, ServerName, Owner, Version, Edition, LastReboot, Description, Notes, LastUpdated)
+        SELECT 
+            @@SERVERNAME,
+            @@SERVERNAME,
+            ''ReportingDBAdmin'',
+            CONVERT(NVARCHAR(50), SERVERPROPERTY(''ProductVersion'')),
+            CONVERT(NVARCHAR(50), SERVERPROPERTY(''Edition'')),
+            (SELECT sqlserver_start_time FROM sys.dm_os_sys_info),
+            ''Reported instance from linked server'',
+            ''Detailed instance reporting'',
+            GETDATE()
+        WHERE NOT EXISTS (SELECT 1 FROM [SSMON].[SSMON].[dbo].Instances WHERE InstanceName = @@SERVERNAME);
+    ';
+
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'Instances Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 090000;
+
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Instances Reporting',
+    @schedule_name = 'Instances Reporting Schedule';
+
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Instances Reporting';
+
+GO
+
+-- Job to Report Databases
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Databases Reporting';
+
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Databases Reporting',
+    @step_name = 'Report Databases',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Databases (InstanceName, DatabaseName, Owner, Status, SizeMB, RecoveryModel, LastBackup, Description, Notes, LastUpdated)
+        SELECT 
+            @@SERVERNAME AS InstanceName,
+            d.name AS DatabaseName,
+            SUSER_SNAME() AS Owner,
+            d.state_desc AS Status,
+            SUM(mf.size * 8 / 1024) AS SizeMB,
+            d.recovery_model_desc AS RecoveryModel,
+            NULL AS LastBackup,
+            ''Dynamically retrieved database details'',
+            ''Monitored by reporting job'',
+            GETDATE()
+        FROM sys.databases d
+        LEFT JOIN sys.master_files mf
+        ON d.database_id = mf.database_id
+        WHERE d.name NOT IN (SELECT DatabaseName FROM [SSMON].[SSMON].[dbo].Databases)
+        GROUP BY d.name, d.state_desc, d.recovery_model_desc;
+    ';
+
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'Databases Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 090000;
+
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Databases Reporting',
+    @schedule_name = 'Databases Reporting Schedule';
+
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Databases Reporting';
+
+GO
+-- Job to Report Alerts (SQL Alerts)
+EXEC  msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Alerts Reporting';
+
+EXEC  msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Alerts Reporting',
+    @step_name = 'Report Alerts',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Alerts (InstanceName, AlertName, Severity, LastTriggered, LastUpdated)
+         SELECT 
+           @@SERVERNAME AS InstanceName,
+            name AS AlertName,
+            severity AS Severity,
+            last_occurrence_date AS LastTriggered,
+            GETDATE() AS LastUpdated
+         FROM msdb.dbo.sysalerts ;
+    ';
+
+EXEC  msdb.dbo.sp_add_schedule 
+    @schedule_name = 'Alerts Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 090000;
+
+EXEC  msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Alerts Reporting',
+    @schedule_name = 'Alerts Reporting Schedule';
+
+EXEC  msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Alerts Reporting';
+GO
+
+-- Job to Report Events (Computer Events)
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Events Reporting';
+
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Events Reporting',
+    @step_name = 'Report Events',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Events (InstanceName, EventName, EventDescription, EventDate, LastUpdated)
+        VALUES
+        (
+            @@SERVERNAME,
+            ''Restart'',
+            ''SQL Server restarted unexpectedly.'',
+            GETDATE() - 3,
+            GETDATE()
+        );
+    ';
+
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'Events Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 090000;
+
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Events Reporting',
+    @schedule_name = 'Events Reporting Schedule';
+
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Events Reporting';
+
+GO
+
+-- Job to Report Backups
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Backups Reporting';
+
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Backups Reporting',
+    @step_name = 'Report Backups',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Backups (DatabaseName, BackupType, BackupPath, BackupDate, SizeMB, LastUpdated)
+        SELECT 
+            bs.database_name AS DatabaseName,
+            CASE bs.type
+                WHEN ''D'' THEN ''Full''
+                WHEN ''I'' THEN ''Differential''
+                WHEN ''L'' THEN ''Log''
+                ELSE ''Other''
+            END AS BackupType,
+            bmf.physical_device_name AS BackupPath,
+            bs.backup_start_date AS BackupDate,
+            bs.backup_size / 1048576 AS SizeMB,
+            GETDATE() AS LastUpdated
+        FROM msdb.dbo.backupset bs
+        LEFT JOIN msdb.dbo.backupmediafamily bmf
+        ON bs.media_set_id = bmf.media_set_id
+        WHERE bs.database_name NOT IN (SELECT DatabaseName FROM [SSMON].[SSMON].[dbo].Backups);
+    ';
+
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'Backups Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 120000; -- Noon
+
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Backups Reporting',
+    @schedule_name = 'Backups Reporting Schedule';
+
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Backups Reporting';
+
+GO
+
+-- Job to Report SQL Jobs (Job History)
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON SQL Jobs Reporting';
+
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON SQL Jobs Reporting',
+    @step_name = 'Report SQL Jobs',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Jobs (InstanceName, JobName, Status, Schedule, LastRun, NextRun, LastUpdated)
+        SELECT 
+            @@SERVERNAME AS InstanceName,
+            sj.name AS JobName,
+            CASE 
+                WHEN jh.run_status = 1 THEN ''Succeeded''
+                WHEN jh.run_status = 0 THEN ''Failed''
+                WHEN jh.run_status = 3 THEN ''Retry''
+                WHEN jh.run_status = 4 THEN ''Canceled''
+                ELSE ''Unknown''
+            END AS Status,
+            NULL AS Schedule, -- Replace with schedule details if applicable
+            msdb.dbo.agent_datetime(jh.run_date, jh.run_time) AS LastRun,
+            NULL AS NextRun, -- Replace with next run details if applicable
+            GETDATE() AS LastUpdated
+        FROM msdb.dbo.sysjobs sj
+        LEFT JOIN msdb.dbo.sysjobhistory jh
+        ON sj.job_id = jh.job_id
+        WHERE NOT EXISTS (
+            SELECT 1 
+            FROM [SSMON].[SSMON].[dbo].Jobs AS Target
+            WHERE Target.InstanceName = @@SERVERNAME 
+            AND Target.JobName = sj.name
+            AND Target.LastRun = msdb.dbo.agent_datetime(jh.run_date, jh.run_time)
+        );
+    ';
+
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'SQL Jobs Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 130000; -- 1:00 PM
+
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON SQL Jobs Reporting',
+    @schedule_name = 'SQL Jobs Reporting Schedule';
+
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON SQL Jobs Reporting';
+GO
+
+-- Job to Report Logins
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Logins Reporting';
+
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Logins Reporting',
+    @step_name = 'Report Logins',
+    @subsystem = 'TSQL',
+    @command = '
+        INSERT INTO [SSMON].[SSMON].[dbo].Logins (InstanceName, LoginName, LoginType, IsEnabled, LastUpdated)
+        SELECT 
+            @@SERVERNAME AS InstanceName,
+            sp.name AS LoginName,
+            CASE sp.type
+                WHEN ''S'' THEN ''SQL Login''
+                WHEN ''U'' THEN ''Windows Login''
+                ELSE ''Other''
+            END AS LoginType,
+            sp.is_disabled AS IsEnabled,
+            GETDATE() AS LastUpdated
+        FROM master.sys.server_principals sp
+        WHERE sp.type IN (''S'', ''U'') -- Only SQL and Windows logins
+        AND sp.name NOT IN (SELECT LoginName FROM [SSMON].[SSMON].[dbo].Logins);
+    ';
+
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'Logins Reporting Schedule',
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 140000; -- 2:00 PM
+
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Logins Reporting',
+    @schedule_name = 'Logins Reporting Schedule';
+
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Logins Reporting';
+
+GO
+
+
+
+
+
+-- Table Cleanup
+-- Step 1: Create the Cleanup Job
+EXEC msdb.dbo.sp_add_job 
+    @job_name = 'SSMON Cleanup Job';
+
+-- Step 2: Add Steps to Cleanup Each Table
+
+-- Cleanup Backups Table
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Cleanup Job',
+    @step_name = 'Cleanup Backups Table',
+    @subsystem = 'TSQL',
+    @command = '
+        IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ''backupset'') -- Check system table
+        BEGIN
+            DELETE FROM [SSMON].[SSMON].[dbo].Backups
+            WHERE BackupDate < DATEADD(DAY, -30, GETDATE()); -- Remove backups older than 30 days
+        END
+    '
+	 ,@on_success_action = 3, -- Move to the next step upon success
+    @on_fail_action = 2;    -- Stop the job on failure;
+
+
+-- Cleanup Jobs Table
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Cleanup Job',
+    @step_name = 'Cleanup Jobs Table',
+    @subsystem = 'TSQL',
+    @command = '
+        IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs) -- Check system table
+        BEGIN
+            DELETE FROM [SSMON].[SSMON].[dbo].Jobs
+            WHERE LastRun IS NULL -- Remove jobs with no LastRun date
+            OR LastUpdated < DATEADD(DAY, -60, GETDATE()); -- Remove outdated records older than 60 days
+        END
+    '
+	 ,@on_success_action = 3, -- Move to the next step upon success
+    @on_fail_action = 2;    -- Stop the job on failure;
+
+-- Cleanup Alerts Table
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Cleanup Job',
+    @step_name = 'Cleanup Alerts Table',
+    @subsystem = 'TSQL',
+    @command = '
+        IF EXISTS (SELECT 1 FROM msdb.dbo.sysalerts) -- Check system table
+        BEGIN
+            DELETE FROM [SSMON].[SSMON].[dbo].Alerts
+            WHERE LastTriggered IS NULL -- Remove alerts with no trigger
+            OR LastUpdated < DATEADD(DAY, -30, GETDATE()); -- Remove alerts older than 30 days
+        END
+    ' ,@on_success_action = 3, -- Move to the next step upon success
+    @on_fail_action = 2;    -- Stop the job on failure;
+
+-- Cleanup Events Table
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Cleanup Job',
+    @step_name = 'Cleanup Events Table',
+    @subsystem = 'TSQL',
+    @command = '
+        IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ''dm_os_sys_info'') -- Check system table
+        BEGIN
+            DELETE FROM [SSMON].[SSMON].[dbo].Events
+            WHERE EventDate < DATEADD(DAY, -60, GETDATE()); -- Remove events older than 60 days
+        END
+    ',@on_success_action = 3, -- Move to the next step upon success
+    @on_fail_action = 2;    -- Stop the job on failure
+
+-- Cleanup Logins Table
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Cleanup Job',
+    @step_name = 'Cleanup Logins Table',
+    @subsystem = 'TSQL',
+    @command = '
+        IF EXISTS (SELECT 1 FROM master.sys.server_principals) -- Check system table
+        BEGIN
+            DELETE FROM [SSMON].[SSMON].[dbo].Logins
+            WHERE LastUpdated < DATEADD(DAY, -90, GETDATE()) -- Remove logins older than 90 days
+            OR IsEnabled = 0; -- Remove disabled logins
+        END
+    ' ,@on_success_action = 3, -- Move to the next step upon success
+    @on_fail_action = 2;    -- Stop the job on failure;
+
+
+-- Step to Cleanup Deleted Databases
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_name = 'SSMON Cleanup Job',
+    @step_name = 'Cleanup Deleted Databases',
+    @subsystem = 'TSQL',
+    @command = '
+        IF EXISTS (SELECT 1 FROM sys.databases) -- Check system table
+        BEGIN
+            DELETE  FROM [SSMON].[SSMON].[dbo].Databases
+            WHERE DatabaseName NOT IN (
+                SELECT name
+                FROM sys.databases
+            )
+            AND InstanceName = @@SERVERNAME; -- Ensure it matches the current instance
+        END
+    ' ,@on_success_action = 1, -- Move to the next step upon success
+    @on_fail_action = 2;    -- Stop the job on failure;
+
+-- Step 3: Create a New Schedule for the Cleanup Job
+EXEC msdb.dbo.sp_add_schedule 
+    @schedule_name = 'SSMON Unique Cleanup Schedule', -- Unique schedule name
+    @freq_type = 4, -- Daily
+    @freq_interval = 1,
+    @active_start_time = 020000; -- Run at 2:00 AM daily
+
+-- Step 4: Attach the New Schedule to the Cleanup Job
+EXEC msdb.dbo.sp_attach_schedule 
+    @job_name = 'SSMON Cleanup Job',
+    @schedule_name = 'SSMON Unique Cleanup Schedule';
+
+-- Step 5: Assign the Job to the Server
+EXEC msdb.dbo.sp_add_jobserver 
+    @job_name = 'SSMON Cleanup Job';
