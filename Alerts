@@ -1,0 +1,93 @@
+--Essential Alerts
+-- Alert_17_Insufficient_Resource – Detects memory and disk resource issues.
+-- Alert_18456_Failed_Login – Captures failed login attempts (potential security risks).
+-- Alert_19_Fatal_Resource – Flags fatal resource-related errors.
+-- Alert_21_Fatal_DB_Process – Monitors critical database process failures.
+-- Alert_23_DB_Integrity – Checks for database integrity violations.
+-- Alert_24_Hardware_Error – Identifies hardware-related failures affecting SQL Server.
+-- Alert_50101_Disk_Percent – Monitors disk usage percentage to avoid space exhaustion.
+-- Alert_9002_Full_Log – Detects when transaction logs are full, preventing further operations.
+
+
+USE msdb;
+GO
+
+-- Insufficient Resource Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Insufficient Resource Alert',
+    @message_id = 17, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Memory or disk resource issue detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Failed Login Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Failed Login Alert',
+    @message_id = 18456, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Failed login attempt detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Fatal Resource Error Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Fatal Resource Alert',
+    @message_id = 19, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Fatal resource issue detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Fatal DB Process Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Fatal DB Process Alert',
+    @message_id = 21, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Critical database process failure detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Database Integrity Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Database Integrity Alert',
+    @message_id = 23, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Database integrity violation detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Hardware Error Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Hardware Error Alert',
+    @message_id = 24, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Hardware failure detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Disk Usage Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Disk Usage Alert',
+    @message_id = 50101, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'High disk usage detected!',
+    @include_event_description_in = 1;
+GO
+
+-- Full Log Alert
+EXEC msdb.dbo.sp_add_alert 
+    @name = N'Full Log Alert',
+    @message_id = 9002, 
+    @severity = 0, 
+    @enabled = 1, 
+    @notification_message = N'Transaction log full!',
+    @include_event_description_in = 1;
+GO
